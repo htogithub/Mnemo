@@ -68,6 +68,7 @@ const st = {
   cfg: null, auth: null, lastSeq: 0, initialDone: false, lastSync: 0,
   dirty: new Map(), pendingMedia: new Map(),
   status: 'off', error: '', progress: '', busy: false, again: false,
+  auto: false,   // false : on ne synchronise que sur demande (bouton)
 };
 const listeners = new Set();
 export const sync = {
@@ -88,7 +89,7 @@ let saveTimer = null;
 function saveNow() {
   clearTimeout(saveTimer); saveTimer = null;
   persist.putKV('sync', {
-    cfg: st.cfg, auth: st.auth, lastSeq: st.lastSeq, initialDone: st.initialDone, lastSync: st.lastSync, firstUpload: st.firstUpload || null,
+    cfg: st.cfg, auth: st.auth, lastSeq: st.lastSeq, initialDone: st.initialDone, lastSync: st.lastSync, firstUpload: st.firstUpload || null, auto: st.auto,
     dirty: [...st.dirty], pendingMedia: [...st.pendingMedia],
   });
 }
@@ -98,10 +99,16 @@ const saveSoon = () => { if (!saveTimer) saveTimer = setTimeout(saveNow, 800); }
 let applying = false, pushTimer = null;
 function mark(kind, id) {
   if (applying || !loggedIn() || !st.initialDone) return;
+  const fresh = !st.dirty.size;
   st.dirty.set(`${kind}:${id}`, Date.now());
   saveSoon();
-  clearTimeout(pushTimer);
-  pushTimer = setTimeout(() => syncNow(), 4000);
+  if (st.auto) { clearTimeout(pushTimer); pushTimer = setTimeout(() => syncNow(), 4000); }
+  else if (fresh) emit();
+}
+export const pendingCount = () => st.dirty.size;
+export function setAuto(v) {
+  st.auto = !!v; saveNow(); emit();
+  if (st.auto) syncNow();
 }
 
 export function initSync() {
@@ -109,16 +116,17 @@ export function initSync() {
   st.cfg = saved.cfg || null; st.auth = saved.auth || null;
   st.lastSeq = saved.lastSeq || 0; st.initialDone = !!saved.initialDone; st.lastSync = saved.lastSync || 0; st.firstUpload = saved.firstUpload || null;
   st.dirty = new Map(saved.dirty || []); st.pendingMedia = new Map(saved.pendingMedia || []);
+  st.auto = saved.auto === true;
   const put = persist.put, del = persist.del;
   persist.put = (store, obj) => { put(store, obj); if (KINDS.includes(store)) mark(store, obj.id); };
   persist.del = (store, key) => { del(store, key); if (KINDS.includes(store)) mark(store, key); };
   raw.put = put; raw.del = del;
   DB.mediaHooks.put = names => { for (const n of names) mark('media', n); };
   setStatus(!configured() ? 'off' : loggedIn() ? 'idle' : 'loggedout');
-  window.addEventListener('online', () => syncNow());
-  document.addEventListener('visibilitychange', () => { if (loggedIn()) syncNow(); });
-  setInterval(() => { if (document.visibilityState === 'visible') syncNow({ quiet: true }); }, 120000);
-  if (loggedIn()) setTimeout(() => syncNow(), 600);
+  window.addEventListener('online', () => { if (st.auto) syncNow(); });
+  document.addEventListener('visibilitychange', () => { if (st.auto && loggedIn()) syncNow(); });
+  setInterval(() => { if (st.auto && document.visibilityState === 'visible') syncNow({ quiet: true }); }, 120000);
+  if (st.auto && loggedIn()) setTimeout(() => syncNow(), 600);
 }
 const raw = { put: null, del: null };
 

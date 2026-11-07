@@ -2,8 +2,8 @@
 import { S, saveSettings, saveDeck, deckByName, renameDeck, deleteDeck, deckChildren, deckSubtree, topDecks, deckLeaf, presetOf, deckParent, deckAncestors, invalidateDecks,
   notetypeOf, noteCards, sortText, deleteNotes, addTags, removeTags, parseTags, saveCard, persist, defaultPreset, saveNotetype,
   notesOfType, genCards, updateNote, deleteCard, uniqueNotetypeName, builtinDef, BUILTIN_KEYS, localizeDefaults, DEFAULT_W, saveNote } from './state.js';
-import { h, ic, $, esc, toast, today, dayStart, fmtIvl, fmtDuration, truncate, hash32, saveFile, debounce, setRollover, newId, stripHtml, dayLabel, dateTime } from './util.js';
-import { initSync, sync, syncNow, signIn, signUp, signOut, setConfig, forgetConfig, configured, loggedIn, resetFrom, SETUP_SQL } from './sync.js';
+import { h, ic, $, esc, toast, today, dayStart, fmtIvl, fmtDuration, truncate, hash32, saveFile, debounce, setRollover, newId, stripHtml, dayLabel, dateTime, shuffle } from './util.js';
+import { initSync, sync, syncNow, signIn, signUp, signOut, setConfig, forgetConfig, configured, loggedIn, resetFrom, SETUP_SQL, setAuto, pendingCount } from './sync.js';
 import { t, tn, setLang, getLang, detectLang } from './i18n.js';
 import { loadAll, flush, storageInfo, requestPersist, wipeAll } from './db.js';
 import { Session, deckCounts, previewIntervals, setSuspended, bury, forget, setFlag, extendLimit, recomputeMemory, unburyIfNewDay } from './sched.js';
@@ -16,7 +16,7 @@ import * as EX from './exporters.js';
 import { go, header, iconBtn, sheet, menu, ask, confirmBox, deckSelect, deckOptions, seg, toggle, setRow, linkRow, section,
   cardStatus, templateName, cardInfo, noteEditor, closeAllSheets, sheetOpen } from './ui.js';
 
-const VERSION = '1.2.2';
+const VERSION = '1.3.0';
 let cleanup = null, pendingSession = null, routeToken = 0;
 
 // ---------- thème ----------
@@ -103,7 +103,12 @@ function syncStatusText() {
   const s = sync.state;
   switch (s.status) {
     case 'syncing': return s.progress || t('Synchronisation…');
-    case 'idle': return s.error || (s.lastSync ? t('Synchronisé {t}', { t: ago(s.lastSync) }) : t('Prêt'));
+    case 'idle': {
+      const n = pendingCount();
+      if (s.error) return s.error;
+      if (n && !s.auto) return tn(n, '{n} modification pas encore synchronisée', '{n} modifications pas encore synchronisées');
+      return s.lastSync ? t('Synchronisé {t}', { t: ago(s.lastSync) }) : t('Prêt');
+    }
     case 'offline': return t('Hors ligne : synchro au retour du réseau');
     case 'error': return t('Erreur : {e}', { e: s.error });
     case 'loggedout': return s.error || t('Non connecté');
@@ -112,8 +117,16 @@ function syncStatusText() {
 }
 function syncIndicator() {
   if (!configured()) return { el: null, off: () => {} };
-  const b = iconBtn('cloud', t('Synchronisation'), () => { if (loggedIn()) { syncNow(); toast(t('Synchronisation…')); } else go('settings'); });
-  const upd = () => { b.className = 'icon-btn sync-ind ' + sync.state.status; b.title = syncStatusText(); b.setAttribute('aria-label', b.title); };
+  const b = iconBtn('cloud', t('Synchronisation'), () => {
+    if (!loggedIn()) return go('settings');
+    if (sync.state.busy) return;
+    toast(t('Synchronisation…'), 8000);
+    syncNow().then(() => toast(sync.state.status === 'idle' && !sync.state.error ? t('Synchronisé') : syncStatusText(), 3500));
+  });
+  const upd = () => {
+    b.className = 'icon-btn sync-ind ' + sync.state.status + (pendingCount() && !sync.state.auto && sync.state.status === 'idle' ? ' pending' : '');
+    b.title = syncStatusText(); b.setAttribute('aria-label', b.title);
+  };
   upd();
   return { el: b, off: sync.onChange(upd) };
 }
@@ -190,10 +203,12 @@ function syncSection() {
       return;
     }
     statusEl = h('small', null, syncStatusText());
-    syncBtn = h('button', { class: 'btn small', disabled: s.busy, onclick: () => syncNow() }, ic('refresh', 16), t('Synchroniser'));
+    syncBtn = h('button', { class: 'btn small', disabled: s.busy, onclick: () => syncNow().then(() => { if (sync.state.status === 'idle' && !sync.state.error) toast(t('Synchronisé')); }) }, ic('refresh', 16), t('Synchroniser'));
     box.replaceChildren(
       setRow(t('Compte'), h('span', { class: 'muted small' }, s.auth?.user?.email || '')),
       h('div', { class: 'set-row' }, h('div', { class: 'set-label' }, h('span', null, t('État')), statusEl), syncBtn),
+      setRow(t('Synchronisation automatique'), toggle(s.auto, v => setAuto(v)),
+        t('Désactivée : rien n\'est envoyé ni reçu tant que tu ne touches pas « Synchroniser » ici ou le nuage dans la liste des paquets.')),
       h('details', { class: 'adv' }, h('summary', null, t('Options avancées')),
         h('div', { class: 'stack pad' },
           h('button', { class: 'btn small', onclick: async () => { if (await confirmBox(t('Remplacer la collection de cet appareil par celle du cloud ?'), { danger: true, ok: t('Remplacer') })) resetFrom('cloud'); } }, t('Remplacer cet appareil par le cloud')),
@@ -237,6 +252,15 @@ async function createDeck(parent = null, { folder = false, open = false } = {}) 
   toast(folder ? t('Dossier créé') : t('Paquet créé'));
   if (open) go('deck/' + id); else rerender();
   return id;
+}
+// Mode libre : toutes les cartes du paquet, mélangées, chacune une fois, sans rien enregistrer
+function startBrowse(did) {
+  const ids = new Set(deckSubtree(did));
+  const cids = shuffle([...S.cards.values()].filter(c => ids.has(c.did) && c.queue !== -1).map(c => c.id));
+  if (!cids.length) { toast(t('Ce paquet ne contient aucune carte.')); return; }
+  pendingSession = new Session({ cids, browse: true, title: t('Mode libre') });
+  pendingSession.backTo = 'deck/' + did;
+  go('study/' + did);
 }
 function moveDeckInto(did, parentId) {
   const leaf = deckLeaf(S.decks.get(did).name);
@@ -401,10 +425,12 @@ function viewDeck(el, id) {
         h('button', { class: 'btn', onclick: () => createDeck(did) }, ic('plus', 18), t('Nouveau paquet ici')),
         h('button', { class: 'btn', onclick: () => createDeck(did, { folder: true }) }, ic('folder', 18), t('Nouveau sous-dossier')),
         h('button', { class: 'btn', onclick: () => addDecksToFolder(did) }, t('Ajouter des paquets')),
+        h('button', { class: 'btn', onclick: () => startBrowse(did) }, ic('shuffle', 18), t('Mode libre')),
         total ? h('button', { class: 'btn', onclick: () => customStudy(did) }, t('Étude personnalisée')) : null));
     return;
   }
   box.append(h('div', { class: 'quick' },
+    h('button', { class: 'btn', onclick: () => startBrowse(did) }, ic('shuffle', 18), t('Mode libre')),
     h('button', { class: 'btn', onclick: () => customStudy(did) }, t('Étude personnalisée')),
     h('a', { class: 'btn', href: '#/add', onclick: () => { S.settings.lastDeck = did; saveSettings(); } }, t('Ajouter')),
     h('a', { class: 'btn', href: '#/browse?q=' + encodeURIComponent(`deck:"${d.name}"`) }, t('Parcourir')),
@@ -484,6 +510,8 @@ function viewStudy(el, arg) {
 
   function renderCounts() {
     const c = session.counts();
+    undoBtn.disabled = !session.canUndo();
+    if (session.browse) { counts.replaceChildren(h('span', { class: 'n browse-pos' }, `${Math.min(session.done + 1, session.total)} / ${session.total}`), h('span', { class: 'muted small' }, session.title)); return; }
     if (session.cram) { counts.replaceChildren(h('span', { class: 'n rev on' }, c.rev), session.title ? h('span', { class: 'muted small' }, session.title) : null); return; }
     const kind = card ? session.kindOf(card) : null;
     counts.replaceChildren(
@@ -528,13 +556,22 @@ function viewStudy(el, arg) {
     next();
   }
   function undo() {
-    if (!session.canUndo()) { toast(t('Rien à annuler')); return; }
+    if (!session.canUndo()) { toast(session.browse ? t('C\'est la première carte.') : t('Rien à annuler')); return; }
     const c = session.undo();
-    toast(t('Réponse annulée'));
+    if (!session.browse) toast(t('Réponse annulée'));
     showCard(c || session.next());
   }
+  function skip() { if (!card) return; session.answer(card, 3, 0); stopAudio(); next(); }
   function renderBar() {
     if (!card) { bar.replaceChildren(); return; }
+    if (session.browse) {
+      const prev = h('button', { class: 'btn browse-prev', disabled: !session.canUndo(), onclick: () => undo(), 'aria-label': t('Carte précédente') }, ic('back', 20));
+      const main = revealed
+        ? h('button', { class: 'btn reveal primary-soft', onclick: () => skip() }, t('Carte suivante'), h('kbd', null, '→'))
+        : h('button', { class: 'btn reveal', onclick: () => reveal() }, st.multi && st.selected?.size ? t('Valider la réponse') : t('Afficher la réponse'), h('kbd', null, t('Espace')));
+      bar.replaceChildren(h('div', { class: 'browse-bar' }, prev, main));
+      return;
+    }
     if (!revealed) {
       const multi = st.multi && st.selected?.size;
       bar.replaceChildren(h('button', { class: 'btn reveal', onclick: () => reveal() }, multi ? t('Valider la réponse') : t('Afficher la réponse'), h('kbd', null, t('Espace'))));
@@ -550,6 +587,20 @@ function viewStudy(el, arg) {
   }
   function finished() {
     card = null; renderCounts(); bar.replaceChildren();
+    if (session.browse) {
+      host.shadowRoot?.replaceChildren();
+      frame.replaceChildren(h('div', { class: 'finished' },
+        h('h2', null, t('Tu as parcouru toutes les cartes')),
+        h('p', null, tn(session.total, '{n} carte, rien n\'a été enregistré.', '{n} cartes, rien n\'a été enregistré.')),
+        h('div', { class: 'actions center' },
+          h('button', { class: 'btn', onclick: () => {
+            const b = session.backTo, title = session.title;
+            session = new Session({ cids: shuffle([...session.cids]), browse: true, title }); session.backTo = b;
+            next();
+          } }, ic('shuffle', 18), t('Remélanger')),
+          h('button', { class: 'btn primary', onclick: () => go(backTo) }, t('Terminer')))));
+      return;
+    }
     const nextL = session.cram ? null : session.nextLearningDue();
     const msg = h('p', { class: 'muted' });
     const body = h('div', { class: 'finished' },
@@ -582,7 +633,7 @@ function viewStudy(el, arg) {
       mountCard(host, card, revealed ? 'a' : 'q', st, handlers()).then(renderBar);
     } }), { cls: 'tall' });
   }
-  function act(fn, msg) { if (!card) return; fn(); if (msg) toast(msg); next(); }
+  function act(fn, msg) { if (!card) return; fn(); if (msg) toast(msg); if (session.cram) session.answer(card, 3, 0); next(); }
   const flagCard = f => { if (!card) return; setFlag([card], (card.flags & 7) === f ? 0 : f); toast((card.flags & 7) ? t('Drapeau ajouté') : t('Drapeau retiré')); };
   const markNote = () => { const n = note(); if (!n) return; const on = n.tags.some(x => x.toLowerCase() === 'marked'); on ? removeTags(n, ['marked']) : addTags(n, ['marked']); toast(on ? t('Note démarquée') : t('Note marquée')); };
   const replay = () => { const r = host.shadowRoot?.querySelector('.card'); if (r) playAll(r, revealed); };
@@ -679,6 +730,11 @@ function viewStudy(el, arg) {
     if (typing) { if (k === 'Escape') target.blur(); return; }
     if (k === 'Escape') { go(backTo); return; }
     if (!card) return;
+    if (session.browse) {
+      if (k === 'ArrowRight') { e.preventDefault(); skip(); return; }
+      if (k === 'ArrowLeft') { e.preventDefault(); undo(); return; }
+      if (revealed && (k === ' ' || k === 'Enter' || /^[1-4]$/.test(k))) { e.preventDefault(); skip(); return; }
+    }
     if (!revealed) {
       if (k === ' ' || k === 'Enter') { e.preventDefault(); reveal(); return; }
       if (!e.ctrlKey && !e.metaKey && keySelect(host, k)) { e.preventDefault(); return; }

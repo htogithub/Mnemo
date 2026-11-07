@@ -361,8 +361,9 @@ export function deckCounts() {
 }
 
 export class Session {
-  constructor({ did = null, cids = null, cram = false, title = '' } = {}) {
-    this.did = did; this.cram = cram; this.title = title;
+  // browse : mode libre, chaque carte une seule fois, dans l'ordre donné, sans rien enregistrer
+  constructor({ did = null, cids = null, cram = false, browse = false, title = '' } = {}) {
+    this.did = did; this.cram = cram || browse; this.browse = browse; this.title = title;
     this.cids = cids ? new Set(cids) : null;
     this.scope = did != null ? new Set(deckSubtree(did)) : null;
     this.undoStack = []; this.done = 0; this.again = 0; this.started = Date.now(); this.time = 0;
@@ -374,6 +375,7 @@ export class Session {
     const day = today(); this.day = day;
     if (this.cram) {
       this.queue = [...this.cids].filter(id => { const c = S.cards.get(id); return c && c.queue !== -1; });
+      this.total = this.queue.length;
       return;
     }
     if (this.cids) {
@@ -398,7 +400,10 @@ export class Session {
     return c.queue === 0 || ((c.queue === 2 || c.queue === 3) && c.due <= this.day);
   }
   next(now = Date.now()) {
-    if (this.cram) return S.cards.get(this.queue[0]) || null;
+    if (this.cram) {
+      while (this.queue.length && !S.cards.get(this.queue[0])) this.queue.shift();
+      return S.cards.get(this.queue[0]) || null;
+    }
     if (today() !== this.day) this.build();
     const lrn = this.learning();
     if (lrn.length && lrn[0].due <= now) return lrn[0];
@@ -424,8 +429,8 @@ export class Session {
     if (this.cram) {
       const prev = this.queue.slice();
       this.queue.shift();
-      if (ease === 1) this.queue.splice(Math.min(this.queue.length, 3), 0, card.id);
-      else if (ease === 2) this.queue.splice(Math.min(this.queue.length, 8), 0, card.id);
+      if (!this.browse && ease === 1) this.queue.splice(Math.min(this.queue.length, 3), 0, card.id);
+      else if (!this.browse && ease === 2) this.queue.splice(Math.min(this.queue.length, 8), 0, card.id);
       this.undoStack.push({ cram: prev, ease, timeMs });
       return {};
     }

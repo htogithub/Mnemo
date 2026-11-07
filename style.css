@@ -379,7 +379,17 @@ svg.heat { max-width: 340px; min-width: 300px; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 body.studying #toast { bottom: calc(96px + var(--safe-b)); }
 
+/* ---------- mode libre ---------- */
+.browse-bar { display: grid; grid-template-columns: 56px 1fr; gap: 8px; }
+.browse-prev { min-height: 56px; padding: 0; border-radius: var(--r-lg); background: var(--surface-2); border: 0; }
+.browse-prev:disabled { opacity: .35; }
+.btn.reveal.primary-soft { background: var(--accent-soft); color: var(--accent); }
+.n.browse-pos { color: var(--fg); }
+html.big-buttons .browse-prev { min-height: 72px; }
+
 /* ---------- synchronisation ---------- */
+.sync-ind { position: relative; }
+.sync-ind.pending::after { content: ""; position: absolute; top: 9px; right: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--learn); box-shadow: 0 0 0 2px var(--bg); }
 .sync-ind { color: var(--muted); }
 .sync-ind.idle { color: var(--fg-soft); }
 .sync-ind.syncing { color: var(--accent); animation: pulse 1.1s ease-in-out infinite; }

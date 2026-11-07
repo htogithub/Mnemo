@@ -9,6 +9,7 @@ The interface is available in English and French (Settings → Language).
 **Studying**
 - FSRS-5 or SM-2 scheduling, chosen per deck preset, with learning and relearning steps, daily limits, leech handling and sibling burying
 - Custom study: raise today's limits, review forgotten cards, review ahead, or cram any search without touching the schedule
+- Shuffle mode: go through every card of a deck or folder once, in random order, with previous/next and nothing saved
 - Undo, flags, mark, bury, suspend, card info with full review history
 - Configurable gestures (swipe left/right/up/down, double tap, long press) and keyboard shortcuts
 - 2- or 4-button grading, optional interval labels, timer and remaining counts
@@ -112,7 +113,7 @@ Mnemo can keep the same collection on your phone and your computer through a fre
 How it works:
 
 - Every note, card, deck, preset, note type and review is stored as one row protected by row-level security, so each account only sees its own data. Images and audio go to a private storage bucket.
-- Mnemo syncs when it opens, a few seconds after each change, when you come back online, and every two minutes while it is open. It keeps working offline in between.
+- By default Mnemo syncs only when you tap the cloud icon in the deck list or **Sync now** in Settings; a dot on the cloud shows unsynced changes. Turn on **Automatic sync** to sync on open, a few seconds after each change, when back online and every two minutes.
 - When the same item was changed on two devices, the most recent change wins. Review histories from both devices are combined.
 - The first time a device that already has cards signs in, Mnemo asks whether to merge both collections, keep only the cloud, or keep only that device.
 - Free Supabase projects pause after a week without activity. Restore the project from the Supabase dashboard; Mnemo keeps working offline until then.

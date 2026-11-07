@@ -693,5 +693,18 @@ export default {
  "Remplacement du cloud…": "Replacing the cloud…",
  "Premier envoi de la collection…": "Uploading collection for the first time…",
  "Première synchronisation en attente.": "First sync pending.",
- "Cartes synchronisées. {n} image(s) ou son(s) en attente, nouvel essai plus tard ({e}).": "Cards synced. {n} image(s) or audio file(s) pending, will retry later ({e})."
+ "Cartes synchronisées. {n} image(s) ou son(s) en attente, nouvel essai plus tard ({e}).": "Cards synced. {n} image(s) or audio file(s) pending, will retry later ({e}).",
+ "{n} modification pas encore synchronisée": "{n} change not synced yet",
+ "{n} modifications pas encore synchronisées": "{n} changes not synced yet",
+ "Synchronisé": "Synced",
+ "Synchronisation automatique": "Automatic sync",
+ "Désactivée : rien n'est envoyé ni reçu tant que tu ne touches pas « Synchroniser » ici ou le nuage dans la liste des paquets.": "Off: nothing is sent or received until you tap “Sync now” here or the cloud in the deck list.",
+ "Ce paquet ne contient aucune carte.": "This deck has no cards.",
+ "Mode libre": "Shuffle mode",
+ "C'est la première carte.": "This is the first card.",
+ "Carte précédente": "Previous card",
+ "Tu as parcouru toutes les cartes": "You've gone through every card",
+ "{n} carte, rien n'a été enregistré.": "{n} card, nothing was saved.",
+ "{n} cartes, rien n'a été enregistré.": "{n} cards, nothing was saved.",
+ "Remélanger": "Shuffle again"
 };
