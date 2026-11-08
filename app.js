@@ -16,7 +16,7 @@ import * as EX from './exporters.js';
 import { go, header, iconBtn, sheet, menu, ask, confirmBox, deckSelect, deckOptions, seg, toggle, setRow, linkRow, section,
   cardStatus, templateName, cardInfo, noteEditor, closeAllSheets, sheetOpen } from './ui.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 let cleanup = null, pendingSession = null, routeToken = 0;
 
 // ---------- thème ----------
@@ -115,13 +115,21 @@ function syncStatusText() {
     default: return t('Désactivée');
   }
 }
+function syncResultText() {
+  const s = sync.state;
+  if (s.status !== 'idle' || s.error) return syncStatusText();
+  const r = s.lastStats;
+  if (!r) return t('Synchronisé');
+  if (!r.sent && !r.received) return t('Déjà à jour');
+  return t('Synchronisé : {a} envoyé(s), {b} reçu(s)', { a: r.sent, b: r.received });
+}
 function syncIndicator() {
   if (!configured()) return { el: null, off: () => {} };
   const b = iconBtn('cloud', t('Synchronisation'), () => {
     if (!loggedIn()) return go('settings');
     if (sync.state.busy) return;
     toast(t('Synchronisation…'), 8000);
-    syncNow().then(() => toast(sync.state.status === 'idle' && !sync.state.error ? t('Synchronisé') : syncStatusText(), 3500));
+    syncNow().then(() => toast(syncResultText(), 3500));
   });
   const upd = () => {
     b.className = 'icon-btn sync-ind ' + sync.state.status + (pendingCount() && !sync.state.auto && sync.state.status === 'idle' ? ' pending' : '');
@@ -203,7 +211,7 @@ function syncSection() {
       return;
     }
     statusEl = h('small', null, syncStatusText());
-    syncBtn = h('button', { class: 'btn small', disabled: s.busy, onclick: () => syncNow().then(() => { if (sync.state.status === 'idle' && !sync.state.error) toast(t('Synchronisé')); }) }, ic('refresh', 16), t('Synchroniser'));
+    syncBtn = h('button', { class: 'btn small', disabled: s.busy, onclick: () => syncNow().then(() => toast(syncResultText(), 3500)) }, ic('refresh', 16), t('Synchroniser'));
     box.replaceChildren(
       setRow(t('Compte'), h('span', { class: 'muted small' }, s.auth?.user?.email || '')),
       h('div', { class: 'set-row' }, h('div', { class: 'set-label' }, h('span', null, t('État')), statusEl), syncBtn),

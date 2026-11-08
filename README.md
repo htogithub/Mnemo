@@ -114,6 +114,7 @@ How it works:
 
 - Every note, card, deck, preset, note type and review is stored as one row protected by row-level security, so each account only sees its own data. Images and audio go to a private storage bucket.
 - By default Mnemo syncs only when you tap the cloud icon in the deck list or **Sync now** in Settings; a dot on the cloud shows unsynced changes. Turn on **Automatic sync** to sync on open, a few seconds after each change, when back online and every two minutes.
+- Sync is incremental: only items changed since the last sync are sent, and a device never downloads back what it just uploaded. After each manual sync, Mnemo shows how many items were sent and received.
 - When the same item was changed on two devices, the most recent change wins. Review histories from both devices are combined.
 - The first time a device that already has cards signs in, Mnemo asks whether to merge both collections, keep only the cloud, or keep only that device.
 - Free Supabase projects pause after a week without activity. Restore the project from the Supabase dashboard; Mnemo keeps working offline until then.

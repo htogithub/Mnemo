@@ -706,5 +706,7 @@ export default {
  "Tu as parcouru toutes les cartes": "You've gone through every card",
  "{n} carte, rien n'a été enregistré.": "{n} card, nothing was saved.",
  "{n} cartes, rien n'a été enregistré.": "{n} cards, nothing was saved.",
- "Remélanger": "Shuffle again"
+ "Remélanger": "Shuffle again",
+ "Déjà à jour": "Already up to date",
+ "Synchronisé : {a} envoyé(s), {b} reçu(s)": "Synced: {a} sent, {b} received"
 };

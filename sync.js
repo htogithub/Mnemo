@@ -89,7 +89,7 @@ let saveTimer = null;
 function saveNow() {
   clearTimeout(saveTimer); saveTimer = null;
   persist.putKV('sync', {
-    cfg: st.cfg, auth: st.auth, lastSeq: st.lastSeq, initialDone: st.initialDone, lastSync: st.lastSync, firstUpload: st.firstUpload || null, auto: st.auto,
+    cfg: st.cfg, auth: st.auth, uid: st.uid || null, lastSeq: st.lastSeq, initialDone: st.initialDone, lastSync: st.lastSync, firstUpload: st.firstUpload || null, auto: st.auto,
     dirty: [...st.dirty], pendingMedia: [...st.pendingMedia],
   });
 }
@@ -117,6 +117,7 @@ export function initSync() {
   st.lastSeq = saved.lastSeq || 0; st.initialDone = !!saved.initialDone; st.lastSync = saved.lastSync || 0; st.firstUpload = saved.firstUpload || null;
   st.dirty = new Map(saved.dirty || []); st.pendingMedia = new Map(saved.pendingMedia || []);
   st.auto = saved.auto === true;
+  st.uid = saved.uid || saved.auth?.user?.id || null;
   const put = persist.put, del = persist.del;
   persist.put = (store, obj) => { put(store, obj); if (KINDS.includes(store)) mark(store, obj.id); };
   persist.del = (store, key) => { del(store, key); if (KINDS.includes(store)) mark(store, key); };
@@ -150,7 +151,7 @@ function setSession(j) {
     expires_at: j.expires_at || Math.floor(Date.now() / 1000) + (j.expires_in || 3600),
     user: { id: j.user?.id, email: j.user?.email },
   };
-  saveNow();
+  saveNow(); DB.flush();
 }
 let refreshing = null;
 function refresh() {
@@ -199,17 +200,18 @@ export function setConfig(url, key) {
   if (!/^https:\/\/[^\s/]+/.test(url)) throw new Error(t('URL invalide : elle commence par https:// et finit par .supabase.co'));
   if (!key) throw new Error(t('Clé manquante.'));
   st.cfg = { url: url.replace(/\/+$/, ''), key };
-  st.auth = null; st.initialDone = false; st.lastSeq = 0; st.dirty.clear();
+  st.auth = null; st.uid = null; st.initialDone = false; st.lastSeq = 0; st.dirty.clear();
   saveNow(); setStatus('loggedout');
 }
 export function forgetConfig() {
-  st.cfg = null; st.auth = null; st.initialDone = false; st.lastSeq = 0; st.dirty.clear(); st.pendingMedia.clear();
+  st.cfg = null; st.auth = null; st.uid = null; st.initialDone = false; st.lastSeq = 0; st.dirty.clear(); st.pendingMedia.clear();
   saveNow(); setStatus('off');
 }
 function startAccount(j) {
-  const prev = st.auth?.user?.id;
+  const prev = st.uid;
   setSession(j);
-  if (prev !== st.auth.user.id) { st.initialDone = false; st.lastSeq = 0; st.dirty.clear(); st.pendingMedia.clear(); }
+  // Même compte qu'avant (session expirée) : on reprend là où on en était, sans tout retélécharger
+  if (prev !== st.auth.user.id) { st.initialDone = false; st.lastSeq = 0; st.dirty.clear(); st.pendingMedia.clear(); st.uid = st.auth.user.id; }
   saveNow(); setStatus('idle');
   return syncNow();
 }
@@ -223,7 +225,7 @@ export async function signUp(email, password) {
 }
 export async function signOut() {
   try { await api('/auth/v1/logout', { method: 'POST' }, false); } catch {}
-  st.auth = null; st.initialDone = false; st.lastSeq = 0; st.dirty.clear(); st.pendingMedia.clear();
+  st.auth = null; st.uid = null; st.initialDone = false; st.lastSeq = 0; st.dirty.clear(); st.pendingMedia.clear();
   saveNow(); setStatus('loggedout');
 }
 
@@ -299,7 +301,10 @@ async function pull(from = st.lastSeq) {
 // ---------- envoi des changements locaux ----------
 const rowsDirty = () => [...st.dirty.keys()].some(k => !k.startsWith('media:'));
 const mediaDirty = () => [...st.dirty.keys()].filter(k => k.startsWith('media:')).length;
-async function pushRows() {
+const UPSERT = `/rest/v1/${TABLE}?on_conflict=user_id,kind,id&select=srv_seq`;
+const UPSERT_HEADERS = { 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=representation' };
+// Envoie les éléments modifiés ; `own` reçoit les numéros serveur de nos propres lignes (pour ne pas les retélécharger)
+async function pushRows(own = new Set()) {
   if (!rowsDirty()) return 0;
   const revMap = new Map(S.revlog.map(l => [l.id, l]));
   const entries = [...st.dirty.entries()].sort((a, b) => ORDER[a[0].split(':')[0]] - ORDER[b[0].split(':')[0]]);
@@ -314,10 +319,8 @@ async function pushRows() {
   let sent = 0, batch = [], size = 0;
   const flushBatch = async () => {
     if (!batch.length) return;
-    await api(`/rest/v1/${TABLE}?on_conflict=user_id,kind,id`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify(batch.map(b => b.row)),
-    });
+    const res = await api(UPSERT, { method: 'POST', headers: UPSERT_HEADERS, body: JSON.stringify(batch.map(b => b.row)) });
+    for (const r of await res.json().catch(() => [])) if (r?.srv_seq != null) own.add(r.srv_seq);
     for (const b of batch) if (st.dirty.get(b.key) === b.ts) st.dirty.delete(b.key);
     sent += batch.length; batch = []; size = 0;
     if (rows.length > 500) progress(t('Envoi : {a} / {b}', { a: sent, b: rows.length }));
@@ -332,7 +335,7 @@ async function pushRows() {
   return sent;
 }
 // Médias envoyés un par un, sans bloquer la synchro des cartes en cas d'échec
-async function pushMedia() {
+async function pushMedia(own = new Set()) {
   const media = [...st.dirty.entries()].filter(([key]) => key.startsWith('media:')).map(([key, ts]) => [key, key.slice(6), ts]);
   let k = 0;
   for (const [key, name, ts] of media) {
@@ -343,10 +346,9 @@ async function pushMedia() {
     if (blob) {
       await api(`/storage/v1/object/${BUCKET}/${path}`, { method: 'POST', headers: { 'x-upsert': 'true', 'Content-Type': blob.type || 'application/octet-stream' }, body: blob });
     }
-    await api(`/rest/v1/${TABLE}?on_conflict=user_id,kind,id`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify([{ user_id: uid(), kind: 'media', id: name, data: blob ? { key: path, type: blob.type || '', size: blob.size } : null, deleted: !blob, updated_at: ts }]),
-    });
+    const res = await api(UPSERT, { method: 'POST', headers: UPSERT_HEADERS,
+      body: JSON.stringify([{ user_id: uid(), kind: 'media', id: name, data: blob ? { key: path, type: blob.type || '', size: blob.size } : null, deleted: !blob, updated_at: ts }]) });
+    for (const r of await res.json().catch(() => [])) if (r?.srv_seq != null) own.add(r.srv_seq);
     if (st.dirty.get(key) === ts) st.dirty.delete(key);
     saveSoon();
     await sleep(120);
@@ -374,6 +376,30 @@ async function downloadMedia() {
   await worker();
 }
 
+// Avance la position de lecture au-delà de nos propres envois, sans les retélécharger.
+// Seuls les éléments écrits entre-temps par un autre appareil sont récupérés.
+async function skipOwn(own) {
+  let maxOwn = 0;
+  for (const s of own) if (s > maxOwn) maxOwn = s;
+  if (maxOwn <= st.lastSeq) return 0;
+  const foreign = [];
+  let from = st.lastSeq;
+  for (;;) {
+    const rows = await (await api(`/rest/v1/${TABLE}?select=srv_seq&srv_seq=gt.${from}&srv_seq=lte.${maxOwn}&order=srv_seq.asc&limit=1000`)).json();
+    for (const r of rows) if (!own.has(r.srv_seq)) foreign.push(r.srv_seq);
+    if (rows.length < 1000) break;
+    from = rows[rows.length - 1].srv_seq;
+  }
+  let changed = 0;
+  for (let i = 0; i < foreign.length; i += 150) {
+    const ids = foreign.slice(i, i + 150).join(',');
+    const rows = await (await api(`/rest/v1/${TABLE}?select=kind,id,data,deleted,updated_at,srv_seq&srv_seq=in.(${ids})&order=srv_seq.asc`)).json();
+    changed += applyRows(rows);
+  }
+  st.lastSeq = Math.max(st.lastSeq, maxOwn);
+  saveSoon();
+  return changed;
+}
 async function maxSeq() {
   const rows = await (await api(`/rest/v1/${TABLE}?select=srv_seq&order=srv_seq.desc&limit=1`)).json();
   return rows[0]?.srv_seq || 0;
@@ -413,7 +439,9 @@ async function merge() {
     S.notetypes.delete(nt.id); raw.del('notetypes', nt.id);
   }
   await markAll(pulled);
-  await pushRows();
+  const own = new Set();
+  await pushRows(own);
+  await skipOwn(own);
 }
 async function replaceCloud() {
   progress(t('Remplacement du cloud…'));
@@ -430,16 +458,19 @@ async function replaceCloud() {
     last = rows[rows.length - 1].srv_seq;
   }
   await markAll();
-  await pushRows();
-  st.lastSeq = await maxSeq();
+  const own = new Set();
+  await pushRows(own);
+  await skipOwn(own);
 }
 async function firstSync() {
   const any = (await (await api(`/rest/v1/${TABLE}?select=id&deleted=eq.false&limit=1`)).json()).length > 0;
   if (!any) {
     progress(t('Premier envoi de la collection…'));
     st.firstUpload = uid();
-    await markAll(); await pushRows();
-    st.lastSeq = await maxSeq();
+    await markAll();
+    const own = new Set();
+    await pushRows(own);
+    await skipOwn(own);
   } else if (!S.notes.size) await replaceLocal();
   else if (st.firstUpload === uid()) await merge();
   else {
@@ -459,7 +490,9 @@ async function mediaStep(force) {
   if (!mediaDirty() && !st.pendingMedia.size) { mediaError = ''; return; }
   if (!force && mediaError && Date.now() < mediaRetryAt) return;
   let err = '';
-  try { await pushMedia(); } catch (e) { err = e.message || String(e); }
+  const own = new Set();
+  try { await pushMedia(own); } catch (e) { err = e.message || String(e); }
+  try { await skipOwn(own); } catch {}
   try { if (st.pendingMedia.size) await downloadMedia(); } catch (e) { err ||= e.message || String(e); }
   mediaError = err;
   if (err) { console.warn('media sync', err); mediaRetryAt = Date.now() + 10 * 60000; }
@@ -475,15 +508,18 @@ export async function syncNow({ quiet = false } = {}) {
   if (st.busy) { st.again = true; return; }
   if (navigator.onLine === false) { setStatus('offline'); return; }
   if (quiet && !st.dirty.size && Date.now() - st.lastSync < 60000) return;
-  st.busy = true; setStatus('syncing');
+  st.busy = true; st.lastStats = null; setStatus('syncing');
   let changed = 0, firstDone = true;
   try {
     if (!st.initialDone) { firstDone = await firstSync(); changed = Infinity; }
     if (firstDone) {
-      await pushRows();
-      changed += await pull();
-      if (rowsDirty()) await pushRows();
+      const received = await pull();
+      const own = new Set();
+      const sent = await pushRows(own);
+      const later = await skipOwn(own);
+      changed += received + later;
       st.lastSync = Date.now();
+      st.lastStats = { sent, received: received + later };
       await mediaStep(!quiet);
       setStatus('idle', mediaNote());
     }
